@@ -1,0 +1,588 @@
+---
+title: "rebekka project"
+author: "Haoran Chen"
+output: html_document
+---
+
+```{r}
+require(pomp)
+require(ggplot2)
+polio_data <- read.csv("blake_data2_2.csv")
+
+polio_statenames <- c("S_1","S_2","S_3","E_1","E_2","E_3","I_1","I_2","I_3","R_1","R_2",
+"R_3","sigma_1","sigma_2") 
+polio_paramnames <- c("rho","eta","nu","gamma","p","beta_a","beta_c")
+polio_obsnames <- c("kids")
+
+#rho = 1.0/210
+polio_dmeasure <- Csnippet("
+  if(t > 56){
+    lik = dbinom(kids, I_1, rho, give_log);
+  }
+  else {
+    lik = dbinom(kids, I_1, rho*eta, give_log);
+  }
+  
+")
+polio_rmeasure <- Csnippet("
+  if(t > 126){
+    kids = rbinom(I_1, rho);
+  }
+  else{
+    kids = rbinom(I_1, rho*eta);
+  }
+")
+
+polio_rprocess <- Csnippet("
+  if (floor(t) == 133 || floor(t) == 147 || floor(t) == 161 || floor(t) == 175){
+    sigma_1 = 1;
+  }
+  else{
+    sigma_1 = 0;
+  }
+
+  double lambda_1 = beta_c*I_1 + beta_a*I_2 + beta_a*I_3;
+  double lambda_2 = beta_a*I_1 + beta_a*I_2 + beta_a*I_3;
+  double lambda_3 = beta_a*I_1 + beta_a*I_2 + beta_a*I_3;
+
+  double N_SE_1 = rbinom(S_1, lambda_1 * dt);
+  double N_EI_1 = rbinom(E_1, nu * dt);
+  double N_IR_1 = rbinom(I_1, gamma * dt);
+  double N_SR_1 = rbinom(S_1, sigma_1 * p * dt);
+
+  S_1 = S_1 - (N_SE_1 + N_SR_1);
+  if (S_1 < 0){
+    S_1 = 0;
+  }
+  E_1 = E_1 + N_SE_1 - N_EI_1;
+  I_1 = I_1 + N_EI_1 - N_IR_1;
+  R_1 = R_1 + N_IR_1 + N_SR_1;
+
+  if (floor(t) == 161 || floor(t) == 175){
+    sigma_2 = 1;
+  }
+  else{
+    sigma_2 = 0;
+  }
+
+  
+  double N_SE_2 = rbinom(S_2, lambda_2 * dt);
+  double N_EI_2 = rbinom(E_2, nu * dt);
+  double N_IR_2 = rbinom(I_2, gamma * dt);
+  double N_SR_2 = rbinom(S_2, sigma_2 * p * dt);
+  
+  S_2 = S_2 - N_SE_2 - N_SR_2;
+  if (S_2 < 0){
+    S_2 = 0;
+  }
+  E_2 = E_2 + N_SE_2 - N_EI_2;
+  I_2 = I_2 + N_EI_2 - N_IR_2;
+  R_2 = R_2 + N_IR_2 + N_SR_2;
+
+  
+  
+  double N_SE_3 = rbinom(S_3, lambda_3 * dt);
+  double N_EI_3 = rbinom(E_3, nu * dt);
+  double N_IR_3 = rbinom(I_3, gamma * dt);
+  
+  S_3 = S_3 - N_SE_3;
+  if (S_3 < 0){
+    S_3 = 0;
+  }
+  E_3 = E_3 + N_SE_3 - N_EI_3;
+  I_3 = I_3 + N_EI_3 - N_IR_3;
+  R_3 = R_3 + N_IR_3;
+")
+
+polio_fromEstimationScale <- Csnippet("
+  Teta = exp(eta);
+  Tnu = exp(nu);
+  Tgamma = exp(gamma);
+  Trho = expit(rho);
+  Tp = expit(p);
+  Tbeta_a = expit(beta_a);
+  Tbeta_c = expit(beta_c);
+")
+
+polio_toEstimationScale <- Csnippet("
+  Teta = log(eta);
+  Tnu = log(nu);
+  Tgamma = log(gamma);
+  Trho = logit(rho);
+  Tp = logit(p);
+  Tbeta_a = logit(beta_a);
+  Tbeta_c = logit(beta_c);
+")
+
+polio_initializer <- Csnippet("
+  S_1 = 110000;
+  S_2 = 176000;
+  S_3 = 105000;
+  E_1 = 0;
+  E_2 = 0;
+  E_3 = 0;
+  I_1 = 1;
+  I_2 = 0;
+  I_3 = 0;
+  R_1 = 0;
+  R_2 = 0;
+  R_3 = 0;
+  sigma_1 = 0;
+  sigma_2 = 0;
+")
+
+polio <- pomp(
+  data = subset(polio_data, 
+              select = c("days","kids")),
+  times = "days",
+  t0 = 0,
+  rprocess = euler.sim(step.fun = polio_rprocess, delta.t=0.25),
+  rmeasure= polio_rmeasure,
+  dmeasure = polio_dmeasure,
+  obsnames = polio_obsnames,
+  statenames = polio_statenames,
+  paramnames = polio_paramnames,
+  initializer=polio_initializer,
+  toEstimationScale=polio_toEstimationScale, 
+  fromEstimationScale=polio_fromEstimationScale
+)
+
+sims2 <- simulate(polio,params=c(eta=1,rho=1.0/210,p=0.69,gamma=1.0/(4.6),nu=1.0/(16.5),beta_a=1.8e-06,beta_c=1e-05),nsim=20,as.data.frame=1,include=TRUE)
+ggplot(sims2,mapping=aes(x=time,y=kids,group=sim,color=sim=="data"))+
+  geom_line()+guides(color=FALSE)
+#plot(sims2[[1]])
+#plot(sims2[[2]])
+#plot(sims2[[3]])
+#plot(sims2[[4]])
+#plot(sims2[[5]])
+#plot(sims2[[6]])
+#plot(sims2[[7]])
+#plot(sims2[[8]])
+#plot(sims2[[9]])
+```
+fitting to all the data 
+3 dimension dmeasure
+```{r}
+require(pomp)
+require(ggplot2)
+polio_data <- read.csv("blake_data2_2.csv")
+
+polio_statenames <- c("S_1","S_2","S_3","E_11","E_12","E_13","E_14","E_15","E_16","E_17","E_18","E_19","E_110","E_111","E_112","E_113","E_114","E_115","E_116","E_21","E_22","E_23","E_24","E_25","E_26","E_27","E_28","E_29","E_210","E_211","E_212","E_213","E_214","E_215","E_216","E_31","E_32","E_33","E_34","E_35","E_36","E_37","E_38","E_39","E_310","E_311","E_312","E_313","E_314","E_315","E_316","I_1","I_2","I_3","R_1","R_2",
+"R_3","sigma_1","sigma_2") 
+polio_paramnames <- c("rho","eta","nu","gamma","p","beta_a","beta_c")
+polio_obsnames <- c("kids")
+
+#rho = 1.0/210
+polio_dmeasure <- Csnippet("
+  if(t > 8){
+    lik = dbinom(kids, I_1, rho, give_log);
+  }
+  else {
+    lik = dbinom(kids, I_1, rho*eta, give_log);
+  }
+  
+")
+polio_rmeasure <- Csnippet("
+  if(t > 18){
+    kids = rbinom(I_1, rho);
+  }
+  else{
+    kids = rbinom(I_1, rho*eta);
+  }
+")
+
+polio_rprocess <- Csnippet("
+  if (floor(t) == 133 || floor(t) == 147 || floor(t) == 161 || floor(t) == 175){
+    sigma_1 = 1;
+  }
+  else{
+    sigma_1 = 0;
+  }
+
+  double lambda_1 = beta_c*I_1 + beta_a*I_2 + beta_a*I_3;
+  double lambda_2 = beta_a*I_1 + beta_a*I_2 + beta_a*I_3;
+  double lambda_3 = beta_a*I_1 + beta_a*I_2 + beta_a*I_3;
+
+  double rep_1 = beta_c*S_1 + beta_a*S_2 + beta_a*S_3;
+
+  
+
+  double N_SE_1 = rbinom(S_1, lambda_1 * dt);
+  double N_EI_11 = rbinom(E_11, nu * dt);
+  double N_EI_12 = rbinom(E_12, nu * dt);
+  double N_EI_13 = rbinom(E_13, nu * dt);
+  double N_EI_14 = rbinom(E_14, nu * dt);
+  double N_EI_15 = rbinom(E_15, nu * dt);
+  double N_EI_16 = rbinom(E_16, nu * dt);
+  double N_EI_17 = rbinom(E_17, nu * dt);
+  double N_EI_18 = rbinom(E_18, nu * dt);
+  double N_EI_19 = rbinom(E_19, nu * dt);
+  double N_EI_110 = rbinom(E_110, nu * dt);
+  double N_EI_111 = rbinom(E_111, nu * dt);
+  double N_EI_112 = rbinom(E_112, nu * dt);
+  double N_EI_113 = rbinom(E_113, nu * dt);
+  double N_EI_114 = rbinom(E_114, nu * dt);
+  double N_EI_115 = rbinom(E_115, nu * dt);
+  double N_EI_116 = rbinom(E_116, nu * dt);
+  double N_IR_1 = rbinom(I_1, gamma * dt);
+  double N_SR_1 = rbinom(S_1, sigma_1 * p * dt);
+
+  S_1 = S_1 - (N_SE_1 + N_SR_1);
+  if (S_1 < 0){
+    S_1 = 0;
+  }
+  E_11 = E_11 + N_SE_1 - N_EI_11;
+  E_12 = E_12 + N_EI_11 - N_EI_12;
+  E_13 = E_13 + N_EI_12 - N_EI_13;
+  E_14 = E_14 + N_EI_13 - N_EI_14;
+  E_15 = E_15 + N_EI_14 - N_EI_15;
+  E_16 = E_16 + N_EI_15 - N_EI_16;
+  E_17 = E_17 + N_EI_16 - N_EI_17;
+  E_18 = E_18 + N_EI_17 - N_EI_18;
+  E_19 = E_19 + N_EI_18 - N_EI_19;
+  E_110 = E_110 + N_EI_19 - N_EI_110;
+  E_111 = E_111 + N_EI_110 - N_EI_111;
+  E_112 = E_112 + N_EI_111 - N_EI_112;
+  E_113 = E_113 + N_EI_112 - N_EI_113;
+  E_114 = E_114 + N_EI_113 - N_EI_114;
+  E_115 = E_115 + N_EI_114 - N_EI_115;
+  E_116 = E_116 + N_EI_115 - N_EI_116;
+  I_1 = I_1 + N_EI_116 - N_IR_1;
+  R_1 = R_1 + N_IR_1 + N_SR_1;
+
+  if (floor(t) == 161 || floor(t) == 175){
+    sigma_2 = 1;
+  }
+  else{
+    sigma_2 = 0;
+  }
+
+  
+  double N_SE_2 = rbinom(S_2, lambda_2 * dt);
+  double N_EI_21 = rbinom(E_21, nu * dt);
+  double N_EI_22 = rbinom(E_22, nu * dt);
+  double N_EI_23 = rbinom(E_23, nu * dt);
+  double N_EI_24 = rbinom(E_24, nu * dt);
+  double N_EI_25 = rbinom(E_25, nu * dt);
+  double N_EI_26 = rbinom(E_26, nu * dt);
+  double N_EI_27 = rbinom(E_27, nu * dt);
+  double N_EI_28 = rbinom(E_28, nu * dt);
+  double N_EI_29 = rbinom(E_29, nu * dt);
+  double N_EI_210 = rbinom(E_210, nu * dt);
+  double N_EI_211 = rbinom(E_211, nu * dt);
+  double N_EI_212 = rbinom(E_212, nu * dt);
+  double N_EI_213 = rbinom(E_213, nu * dt);
+  double N_EI_214 = rbinom(E_214, nu * dt);
+  double N_EI_215 = rbinom(E_215, nu * dt);
+  double N_EI_216 = rbinom(E_216, nu * dt);
+  double N_IR_2 = rbinom(I_2, gamma * dt);
+  double N_SR_2 = rbinom(S_2, sigma_2 * p * dt);
+  
+  S_2 = S_2 - N_SE_2 - N_SR_2;
+  if (S_2 < 0){
+    S_2 = 0;
+  }
+  E_21 = E_21 + N_SE_2 - N_EI_21;
+  E_22 = E_22 + N_EI_21 - N_EI_22;
+  E_23 = E_23 + N_EI_22 - N_EI_23;
+  E_24 = E_24 + N_EI_23 - N_EI_24;
+  E_25 = E_25 + N_EI_24 - N_EI_25;
+  E_26 = E_26 + N_EI_25 - N_EI_26;
+  E_27 = E_27 + N_EI_26 - N_EI_27;
+  E_28 = E_28 + N_EI_27 - N_EI_28;
+  E_29 = E_29 + N_EI_28 - N_EI_29;
+  E_210 = E_210 + N_EI_29 - N_EI_210;
+  E_211 = E_211 + N_EI_210 - N_EI_211;
+  E_212 = E_212 + N_EI_211 - N_EI_212;
+  E_213 = E_213 + N_EI_212 - N_EI_213;
+  E_214 = E_214 + N_EI_213 - N_EI_214;
+  E_215 = E_215 + N_EI_214 - N_EI_215;
+  E_216 = E_216 + N_EI_215 - N_EI_216;
+  I_2 = I_2 + N_EI_216 - N_IR_2;
+  R_2 = R_2 + N_IR_2 + N_SR_2;
+
+  
+  
+  double N_SE_3 = rbinom(S_3, lambda_3 * dt);
+  double N_EI_31 = rbinom(E_31, nu * dt);
+  double N_EI_32 = rbinom(E_32, nu * dt);
+  double N_EI_33 = rbinom(E_33, nu * dt);
+  double N_EI_34 = rbinom(E_34, nu * dt);
+  double N_EI_35 = rbinom(E_35, nu * dt);
+  double N_EI_36 = rbinom(E_36, nu * dt);
+  double N_EI_37 = rbinom(E_37, nu * dt);
+  double N_EI_38 = rbinom(E_38, nu * dt);
+  double N_EI_39 = rbinom(E_39, nu * dt);
+  double N_EI_310 = rbinom(E_310, nu * dt);
+  double N_EI_311 = rbinom(E_311, nu * dt);
+  double N_EI_312 = rbinom(E_312, nu * dt);
+  double N_EI_313 = rbinom(E_313, nu * dt);
+  double N_EI_314 = rbinom(E_314, nu * dt);
+  double N_EI_315 = rbinom(E_315, nu * dt);
+  double N_EI_316 = rbinom(E_316, nu * dt);
+  double N_IR_3 = rbinom(I_3, gamma * dt);
+  
+  S_3 = S_3 - N_SE_3;
+  if (S_3 < 0){
+    S_3 = 0;
+  }
+  E_31 = E_31 + N_SE_3 - N_EI_31;
+  E_32 = E_32 + N_EI_31 - N_EI_32;
+  E_33 = E_33 + N_EI_32 - N_EI_33;
+  E_34 = E_34 + N_EI_33 - N_EI_34;
+  E_35 = E_35 + N_EI_34 - N_EI_35;
+  E_36 = E_36 + N_EI_35 - N_EI_36;
+  E_37 = E_37 + N_EI_36 - N_EI_37;
+  E_38 = E_38 + N_EI_37 - N_EI_38;
+  E_39 = E_39 + N_EI_38 - N_EI_39;
+  E_310 = E_310 + N_EI_39 - N_EI_310;
+  E_311 = E_311 + N_EI_310 - N_EI_311;
+  E_312 = E_312 + N_EI_311 - N_EI_312;
+  E_313 = E_313 + N_EI_312 - N_EI_313;
+  E_314 = E_314 + N_EI_313 - N_EI_314;
+  E_315 = E_315 + N_EI_314 - N_EI_315;
+  E_316 = E_316 + N_EI_315 - N_EI_316;
+  I_3 = I_3 + N_EI_316 - N_IR_3;
+  R_3 = R_3 + N_IR_3;
+")
+
+polio_fromEstimationScale <- Csnippet("
+  Teta = exp(eta);
+  Tnu = exp(nu);
+  Tgamma = exp(gamma);
+  Trho = expit(rho);
+  Tp = expit(p);
+  Tbeta_a = expit(beta_a);
+  Tbeta_c = expit(beta_c);
+")
+
+polio_toEstimationScale <- Csnippet("
+  Teta = log(eta);
+  Tnu = log(nu);
+  Tgamma = log(gamma);
+  Trho = logit(rho);
+  Tp = logit(p);
+  Tbeta_a = logit(beta_a);
+  Tbeta_c = logit(beta_c);
+")
+
+polio_initializer <- Csnippet("
+  S_1 = 110000;
+  S_2 = 176000;
+  S_3 = 105000;
+  E_11 = 0;
+  E_12 = 0;
+  E_13 = 0;
+  E_14 = 0;
+  E_15 = 0;
+  E_16 = 0;
+  E_17 = 0;
+  E_18 = 0;
+  E_19 = 0;
+  E_110 = 0;
+  E_111 = 0;
+  E_112 = 0;
+  E_113 = 0;
+  E_114 = 0;
+  E_115 = 0;
+  E_116 = 0;
+  E_21 = 0;
+  E_22 = 0;
+  E_23 = 0;
+  E_24 = 0;
+  E_25 = 0;
+  E_26 = 0;
+  E_27 = 0;
+  E_28 = 0;
+  E_29 = 0;
+  E_210 = 0;
+  E_211 = 0;
+  E_212 = 0;
+  E_213 = 0;
+  E_214 = 0;
+  E_215 = 0;
+  E_216 = 0;
+  E_31 = 0;
+  E_32 = 0;
+  E_33 = 0;
+  E_34 = 0;
+  E_35 = 0;
+  E_36 = 0;
+  E_37 = 0;
+  E_38 = 0;
+  E_39 = 0;
+  E_310 = 0;
+  E_311 = 0;
+  E_312 = 0;
+  E_313 = 0;
+  E_314 = 0;
+  E_315 = 0;
+  E_316 = 0;
+  I_1 = 1;
+  I_2 = 0;
+  I_3 = 0;
+  R_1 = 0;
+  R_2 = 0;
+  R_3 = 0;
+  sigma_1 = 0;
+  sigma_2 = 0;
+")
+
+polio <- pomp(
+  data = subset(polio_data, 
+              select = c("days","kids")),
+  times = "days",
+  t0 = 0,
+  rprocess = euler.sim(step.fun = polio_rprocess, delta.t=0.25),
+  rmeasure= polio_rmeasure,
+  dmeasure = polio_dmeasure,
+  obsnames = polio_obsnames,
+  statenames = polio_statenames,
+  paramnames = polio_paramnames,
+  initializer=polio_initializer,
+  toEstimationScale=polio_toEstimationScale, 
+  fromEstimationScale=polio_fromEstimationScale
+)
+
+sims <- simulate(polio,params=c(eta=1,rho=1.0/210,p=0.69,gamma=1.0/(4.6),nu=1/(16.5/16),beta_a=2.4e-07,beta_c=1.15e-05),nsim=20,as.data.frame=1,include=TRUE)
+ggplot(sims,mapping=aes(x=time,y=kids,group=sim,color=sim=="data"))+
+  geom_line()+guides(color=FALSE)
+```
+
+estimate likelihood using pfilter
+likelihood slice
+get a feeling 
+likelihood surface
+
+```{r}
+pf <- replicate(10,pfilter(polio,Np=10000,params=c(eta=1,rho=1.0/210,p=0.69,gamma=1.0/(4.6),nu=1/(16.5/16),beta_a=2.4e-07,beta_c=1.15e-05)))
+ll <- sapply(pf,logLik)
+ll
+```
+```{r}
+pf <- replicate(10,pfilter(polio,Np=10000,params=c(eta=1,rho=1.0/210,p=0.69,gamma=1.0/(4.6),nu=1/(16.5/16),beta_a=2.5e-07,beta_c=3.5e-06)))
+ll_blake <- sapply(pf,logLik)
+ll_blake
+```
+
+```{r}
+run_level <- 2
+switch(run_level,
+       {polio_Np=500; polio_Nmif=10; polio_Neval=10; polio_Nlocal=10}, 
+       {polio_Np=10000; polio_Nmif=100; polio_Neval=10; polio_Nlocal=100} 
+       #{polio_Np=60000; polio_Nmif=300; polio_Neval=10; polio_Nglobal=100; polio_Nlocal=20}
+)
+
+require(doParallel)
+cores <- detectCores() - 1  # The number of cores on this machine 
+registerDoParallel(cores)
+mcopts <- list(set.seed=TRUE)
+
+set.seed(396658101,kind="L'Ecuyer")
+
+polio_rw.sd <- 0.02
+polio_cooling.fraction.50 <- 0.5
+polio_mle <- c(eta=0.5,rho=1.0/210,p=0.69,gamma=1.0/(4.6/7),nu=1.5,beta_a=2.5e-07,beta_c=3.55e-05)
+
+stew(file=sprintf("local_search-%d.rda",run_level),{
+  
+  t_local <- system.time({
+    mifs_local <- foreach(i=1:polio_Nlocal,.packages='pomp', .combine=c, .options.multicore=mcopts) %dopar%  {
+      mif2(
+        polio,
+        start=polio_mle,
+        Np=polio_Np,
+        Nmif=polio_Nmif,
+        cooling.type="geometric",
+        cooling.fraction.50=polio_cooling.fraction.50,
+        transform=TRUE,
+        rw.sd=rw.sd(
+          eta=polio_rw.sd,
+          rho=polio_rw.sd,
+          p=polio_rw.sd,
+          nu=polio_rw.sd,
+          gamma=polio_rw.sd,
+          beta_a=polio_rw.sd,
+          beta_c=polio_rw.sd
+        )
+      )
+      
+    }
+  })
+  
+},seed=900242057,kind="L'Ecuyer")
+
+stew(file=sprintf("lik_local-%d.rda",run_level),{
+    t_local_eval <- system.time({
+    liks_local <- foreach(i=1:polio_Nlocal,.packages='pomp',.combine=rbind) %dopar% {
+      evals <- replicate(polio_Neval, logLik(pfilter(polio,params=coef(mifs_local[[i]]),Np=polio_Np)))
+      logmeanexp(evals, se=TRUE)
+    }
+  })
+},seed=900242057,kind="L'Ecuyer")
+
+results_local <- data.frame(logLik=liks_local[,1],logLik_se=liks_local[,2],t(sapply(mifs_local,coef)))
+summary(results_local$logLik,digits=5)
+plot(mifs_local)
+```
+
+
+```{r}
+require(doParallel)
+cores <- 3  # The number of cores on this machine 
+registerDoParallel(cores)
+mcopts <- list(set.seed=TRUE)
+
+polio_rw.sd <- 0.02
+polio_cooling.fraction.50 <- 0.5
+
+polio_box <- rbind(
+  nu=c(0.3,2),
+  beta_a=c(1e-07,1e-06),
+  beta_c=c(1e-06,1e-05)
+)
+
+run_level <- 2
+switch(run_level,
+       {polio_Np=500; polio_Nmif=10; polio_Neval=10; polio_Nglobal=10}, 
+       {polio_Np=10000; polio_Nmif=100; polio_Neval=10; polio_Nglobal=100} 
+       #{polio_Np=60000; polio_Nmif=300; polio_Neval=10; polio_Nglobal=100; polio_Nlocal=20}
+)
+
+require(doParallel)
+cores <- detectCores()  # The number of cores on this machine 
+registerDoParallel(cores)
+mcopts <- list(set.seed=TRUE)
+
+stew(file="box_eval.rda",{
+  t_global <- system.time({
+    mifs_global <- foreach(i=1:polio_Nglobal,.packages='pomp',.combine=c, .options.multicore=mcopts) %dopar% mif2( 
+        polio,
+        start=apply(polio_box,1,function(x)runif(1,x[1],x[2])),
+        Np = polio_Np,
+        Nmif = polio_Nmif,
+        cooling.type = "geometric",
+        cooling.fraction.50=polio_cooling.fraction.50,
+        transform = TRUE,
+        rw.sd=rw.sd(
+          nu=polio_rw.sd,
+          beta_a=polio_rw.sd,
+          beta_c=polio_rw.sd
+        )
+    )
+  })
+},seed=290860873,kind="L'Ecuyer")
+
+stew(file=sprintf("lik_global_eval-%d.rda",run_level),{
+  t_global_eval <- system.time({
+    liks_global <- foreach(i=1:polio_Nglobal,.packages='pomp',.combine=rbind, .options.multicore=mcopts) %dopar% {
+      evals <- replicate(polio_Neval, logLik(pfilter(polio,params=coef(mifs_global[[i]]),Np=polio_Np)))
+      logmeanexp(evals, se=TRUE)
+    }
+  })
+},seed=442141592,kind="L'Ecuyer")
+
+results_global <- data.frame(logLik=liks_global[,1],logLik_se=liks_global[,2],t(sapply(mifl_global,coef)))
+summary(results_global$logLik,digits=5)
+plot(mifs_global)
+```
